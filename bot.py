@@ -370,7 +370,7 @@ async def handle_text(message: Message):
             context_chunks.append(text)
             
             # Извлекаем автора, книгу и страницу из метаданных (если они прописаны в базе)
-            author = payload.get("author") or ("Минсельхоз РТ" if lang == "ru" else "ВК ҶТ")
+            author = payload.get("author") or ("Министерство сельского хозяйства Республики Таджикистан" if lang == "ru" else "Вазорати кишоварзии Ҷумҳурии Тоҷикистон")
             book = payload.get("book") or ("Официальное руководство" if lang == "ru" else "Дастури расмӣ")
             page = payload.get("page")
             
