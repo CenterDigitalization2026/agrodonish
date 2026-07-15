@@ -321,9 +321,10 @@ async def handle_photo(message: Message):
             os.remove(photo_path)
 
 # ================= ОБРАБОТКА ВОПРОСОВ ЧЕРЕЗ QDRANT =================
+
 @dp.message(F.text)
 async def handle_text(message: Message):
-    # ЗАЩИТА: Игнорируем служебный текст экранных кнопок меню, чтобы их не читал Qdrant/Gemini
+    # ЗАЩИТА: Игнорируем служебный текст экранных кнопок меню
     if message.text in [
         "📝 Савол додан", "📝 Задать вопрос", 
         "📸 Ташхис тавассути акс", "📸 Диагностика по фото", "📸 Диагностика по photo",
@@ -345,32 +346,41 @@ async def handle_text(message: Message):
         
         search_result = []
         
-        # Автоматическая проверка методов (для любых версий библиотеки Qdrant)
+        # Автоматическая проверка методов Qdrant
         if hasattr(qdrant_client, "search"):
-            # Вариант для стандартных версий
             search_result = qdrant_client.search(
                 collection_name=COLLECTION_NAME,
                 query_vector=query_vector,
                 limit=4
             )
         elif hasattr(qdrant_client, "query_points"):
-            # Вариант для самых новых версий библиотеки
             response = qdrant_client.query_points(
                 collection_name=COLLECTION_NAME,
                 query=query_vector,
                 limit=4
             )
             search_result = response.points
-        else:
-            # Если оба метода не найдены — выводим жесткую диагностику в консоль сервера
-            print(f"\n[КРИТИЧЕСКАЯ ОШИБКА] У объекта QdrantClient нет методов search или query_points!")
-            print(f"[Доступные методы в твоей системе]: {dir(qdrant_client)}\n")
-            raise AttributeError("Компоненты базы данных Qdrant не согласуются с версией библиотеки.")
         
         context_chunks = []
+        sources = []  # Список для уникальных источников
+        
         for hit in search_result:
-            text = hit.payload.get("text", "")
+            payload = hit.payload
+            text = payload.get("text", "")
             context_chunks.append(text)
+            
+            # Извлекаем автора, книгу и страницу из метаданных (если они прописаны в базе)
+            author = payload.get("author") or ("Минсельхоз РТ" if lang == "ru" else "ВК ҶТ")
+            book = payload.get("book") or ("Официальное руководство" if lang == "ru" else "Дастури расмӣ")
+            page = payload.get("page")
+            
+            # Формируем красивую строку источника
+            source_str = f"• *«{book}»* — _ {author} _"
+            if page:
+                source_str += f" (стр. {page})" if lang == "ru" else f" (сах. {page})"
+                
+            if source_str not in sources:
+                sources.append(source_str)
             
         context = "\n\n--- Фрагмент документа ---\n\n".join(context_chunks) if context_chunks else ""
         
@@ -394,8 +404,21 @@ async def handle_text(message: Message):
         full_prompt = f"{system_instruction}\nБАЗА ЗНАНИЙ:\n{context}\n\nВОПРОС: {message.text}"
         
         response = client.models.generate_content(model="gemini-2.5-flash", contents=full_prompt)
+        
+        # Если ИИ выдал стандартную заглушку (ответ не найден), то источники прикреплять не нужно
+        if template_reply in response.text:
+            final_text = response.text
+        else:
+            # Формируем красивый блок источников под основным ответом
+            if sources:
+                sources_title = "\n\n📋 *Источники информации:*\n" if lang == "ru" else "\n\n📋 *Манбаъҳои маълумот:*\n"
+                sources_block = sources_title + "\n".join(sources)
+                final_text = f"{response.text}{sources_block}"
+            else:
+                final_text = response.text
+
         await waiting_msg.delete()
-        await message.answer(response.text, parse_mode="Markdown")
+        await message.answer(final_text, parse_mode="Markdown")
         
     except Exception as e:
         print(f"Ошибка в handle_text: {e}")
