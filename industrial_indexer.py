@@ -4,7 +4,6 @@ import hashlib
 from pypdf import PdfReader
 from docx import Document
 from qdrant_client import QdrantClient
-# Сюда добавлены новые компоненты для быстрой проверки дубликатов
 from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, MatchValue
 from fastembed import TextEmbedding
 
@@ -44,22 +43,40 @@ def chunk_text(text, chunk_size=800, overlap=150):
         start += chunk_size - overlap
     return chunks
 
-def extract_text_from_pdf(file_path):
+# --- УМНОЕ ИЗВЛЕЧЕНИЕ СТРАНИЦ ИЗ PDF ---
+def extract_chunks_with_metadata_pdf(file_path):
+    """
+    Постранично читает PDF и нарезает текст каждой страницы отдельно, 
+    сохраняя реальный номер страницы.
+    """
     reader = PdfReader(file_path)
-    text = ""
-    for page in reader.pages:
+    chunks_with_meta = []
+    
+    for page_num, page in enumerate(reader.pages, start=1):
         page_text = page.extract_text()
-        if page_text:
-            text += page_text + "\n"
-    return text
+        if page_text and page_text.strip():
+            # Нарезаем текст этой конкретной страницы
+            page_chunks = chunk_text(page_text, chunk_size=800, overlap=150)
+            for chunk in page_chunks:
+                chunks_with_meta.append({
+                    "text": chunk,
+                    "page": page_num
+                })
+    return chunks_with_meta
 
-def extract_text_from_docx(file_path):
+# --- ИЗВЛЕЧЕНИЕ ИЗ DOCX (У Word нет четких физических страниц) ---
+def extract_chunks_with_metadata_docx(file_path):
+    """
+    Читает DOCX файл и нарезает на чанки. Номер страницы выставляется как None.
+    """
     doc = Document(file_path)
-    text = []
+    text_list = []
     for para in doc.paragraphs:
         if para.text.strip():
-            text.append(para.text)
-    return "\n".join(text)
+            text_list.append(para.text)
+    full_text = "\n".join(text_list)
+    chunks = chunk_text(full_text)
+    return [{"text": chunk, "page": None} for chunk in chunks]
 
 def main():
     if not os.path.exists(PDF_DIR):
@@ -88,7 +105,6 @@ def main():
         
         try:
             # === СУПЕР-УМНЫЙ ПРОПУСК СТАРЫХ ФАЙЛОВ ===
-            # Быстро спрашиваем у Qdrant, знает ли он уже этот файл
             already_indexed, _ = qdrant_client.scroll(
                 collection_name=COLLECTION_NAME,
                 scroll_filter=Filter(
@@ -104,32 +120,61 @@ def main():
                 continue
             # =========================================
 
-            # Если файла в базе нет, начинаем его читать и нарезать
+            # === УМНОЕ ОПРЕДЕЛЕНИЕ АВТОРА И НАЗВАНИЯ КНИГИ ===
+            filename_without_ext = os.path.splitext(file_name)[0]
+            author = "Вазорати кишоварзии ҶТ"  # Дефолтный автор
+            book = filename_without_ext         # Дефолтное название книги
+
+            # Вариант 1: Если файл назван в формате "Автор - Название книги.pdf"
+            if " - " in filename_without_ext:
+                parts = filename_without_ext.split(" - ", 1)
+                author = parts[0].strip()
+                book = parts[1].strip()
+            else:
+                # Вариант 2: Если файл лежит в подпапке (например: big_knowledge_base/А. Салимов/Пчеловодство.pdf)
+                rel_path = os.path.relpath(file_path, PDF_DIR)
+                path_parts = rel_path.split(os.sep)
+                if len(path_parts) >= 2:
+                    author = path_parts[0].strip()  # Имя папки становится Автором
+                    book = filename_without_ext
+
+            # === ЧТЕНИЕ И НАРЕЗКА С СОХРАНЕНИЕМ СТРАНИЦ ===
             if file_name.lower().endswith('.pdf'):
-                file_text = extract_text_from_pdf(file_path)
+                chunks_data = extract_chunks_with_metadata_pdf(file_path)
             elif file_name.lower().endswith('.docx'):
-                file_text = extract_text_from_docx(file_path)
+                chunks_data = extract_chunks_with_metadata_docx(file_path)
             else:
                 continue
 
-            if not file_text.strip():
+            if not chunks_data:
                 print(f" ⚠️ Пропущен (пустой текст): {file_name}")
                 continue
 
-            chunks = chunk_text(file_text)
-            print(f"   🔥 Новый файл! Нарезаем на {len(chunks)} кусков и генерируем векторы...")
+            print(f"   🔥 Новый файл! Нарезаем на {len(chunks_data)} кусков и генерируем векторы...")
             
-            for i, chunk in enumerate(chunks):
-                text_for_vector = f"passage: {chunk}"
+            for i, chunk_info in enumerate(chunks_data):
+                chunk_text_content = chunk_info["text"]
+                page_num = chunk_info["page"]
+
+                text_for_vector = f"passage: {chunk_text_content}"
                 vector = list(encoder.embed([text_for_vector]))[0].tolist()
 
                 hash_object = hashlib.md5(f"{file_path}_{i}".encode('utf-8'))
                 deterministic_uuid = str(uuid.UUID(hash_object.hexdigest()))
 
+                # Формируем расширенный payload для Qdrant
+                payload = {
+                    "text": chunk_text_content,
+                    "source": file_name,
+                    "book": book,
+                    "author": author,
+                    "page": page_num
+                }
+
                 point = PointStruct(
                     id=deterministic_uuid,
                     vector=vector,
-                    payload={"text": chunk, "source": file_name}
+                    payload=payload
                 )
                 points_batch.append(point)
 
