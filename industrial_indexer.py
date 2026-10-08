@@ -15,24 +15,26 @@ COLLECTION_NAME = "agro_large_db"
 VECTOR_SIZE = 1024  
 BATCH_SIZE = 100  # Отправляем порциями по 100 векторов
 
-print("Запуск ИИ-модели эмбеддингов (E5 Large)...")
-encoder = TextEmbedding(model_name="intfloat/multilingual-e5-large")
+def init_qdrant_and_encoder():
+    print("Запуск ИИ-модели эмбеддингов (E5 Large)...")
+    encoder = TextEmbedding(model_name="intfloat/multilingual-e5-large")
 
-print("Подключение к серверу Qdrant...")
-qdrant_client = QdrantClient(url="http://localhost:6333")
+    print("Подключение к серверу Qdrant...")
+    qdrant_client = QdrantClient(url="http://localhost:6333")
 
-# ==========================================
-# ИНИЦИАЛИЗАЦИЯ КОЛЛЕКЦИИ
-# ==========================================
-try:
-    qdrant_client.get_collection(COLLECTION_NAME)
-    print(f"ℹ️ Коллекция '{COLLECTION_NAME}' готова. Режим умного добавления данных включен.")
-except Exception:
-    print(f"✨ Создание НОВОЙ промышленной коллекции '{COLLECTION_NAME}'...")
-    qdrant_client.create_collection(
-        collection_name=COLLECTION_NAME,
-        vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE, on_disk=True)
-    )
+    # ==========================================
+    # ИНИЦИАЛИЗАЦИЯ КОЛЛЕКЦИИ
+    # ==========================================
+    try:
+        qdrant_client.get_collection(COLLECTION_NAME)
+        print(f"ℹ️ Коллекция '{COLLECTION_NAME}' готова. Режим умного добавления данных включен.")
+    except Exception:
+        print(f"✨ Создание НОВОЙ промышленной коллекции '{COLLECTION_NAME}'...")
+        qdrant_client.create_collection(
+            collection_name=COLLECTION_NAME,
+            vectors_config=VectorParams(size=VECTOR_SIZE, distance=Distance.COSINE, on_disk=True)
+        )
+    return encoder, qdrant_client
 
 def chunk_text(text, chunk_size=800, overlap=150):
     chunks = []
@@ -96,6 +98,8 @@ def main():
         return
 
     print(f"📚 Найдено файлов для анализа (включая подпапки): {len(all_files)}")
+    
+    encoder, qdrant_client = init_qdrant_and_encoder()
     
     points_batch = []
     total_indexed_chunks = 0
