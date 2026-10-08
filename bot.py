@@ -1,24 +1,30 @@
 import os
+import io
 import asyncio
 from google import genai
 from PIL import Image
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from aiogram.types import (
+    Message,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery
+)
 from aiogram.filters import Command
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.context import FSMContext
 from dotenv import load_dotenv
-# Добавляем библиотеки для работы векторного поиска Qdrant
 from fastembed import TextEmbedding
 from qdrant_client import QdrantClient
 
-# Загружаем скрытые переменные окружения из файла .env
+# Загружаем переменные окружения из файла .env
 load_dotenv()
 
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 API_KEY = os.getenv("API_KEY")
 
-# Проверка, что ключи успешно подтянулись
 if not TELEGRAM_TOKEN or not API_KEY:
     exit("❌ Ошибка: Переменные TELEGRAM_TOKEN или API_KEY не найдены в файле .env!")
 
@@ -32,11 +38,8 @@ encoder = TextEmbedding(model_name="intfloat/multilingual-e5-large")
 qdrant_client = QdrantClient(url="http://localhost:6333")
 COLLECTION_NAME = "agro_large_db"
 
-# Временная память для хранения выбранного языка пользователей
+# Память для хранения выбранного языка пользователей
 user_languages = {}
-
-if not os.path.exists("downloads"):
-    os.makedirs("downloads")
 
 # Состояния FSM для ручного ввода площади в калькуляторе семян
 class SeedCalcState(StatesGroup):
@@ -48,6 +51,43 @@ SEED_NORMS = {
     "pahta": 2.5,       # ~2.5 кг семян хлопка на 1 сотку
     "gandum": 2.2       # ~2.2 кг зерна пшеницы на 1 сотку
 }
+
+# ================= ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ =================
+
+async def safe_send_message(message: Message, text: str):
+    """
+    Безопасная отправка ответа в Telegram:
+    1. Автоматическая разбивка сообщений при превышении лимита 4096 символов.
+    2. Fallback на обычный текст, если Telegram не может распарсить Markdown.
+    """
+    max_len = 4000
+    chunks = [text[i:i + max_len] for i in range(0, len(text), max_len)] if len(text) > max_len else [text]
+    for chunk in chunks:
+        try:
+            await message.answer(chunk, parse_mode="Markdown")
+        except Exception:
+            await message.answer(chunk)
+
+def compute_query_vector(text: str):
+    """Вычисление вектора эмбеддинга для поискового запроса."""
+    return list(encoder.embed([f"query: {text}"]))[0].tolist()
+
+def perform_qdrant_search(query_vector):
+    """Синхронный поиск по коллекции Qdrant."""
+    if hasattr(qdrant_client, "query_points"):
+        response = qdrant_client.query_points(
+            collection_name=COLLECTION_NAME,
+            query=query_vector,
+            limit=4
+        )
+        return response.points
+    elif hasattr(qdrant_client, "search"):
+        return qdrant_client.search(
+            collection_name=COLLECTION_NAME,
+            query_vector=query_vector,
+            limit=4
+        )
+    return []
 
 # ================= СОЗДАНИЕ КНОПОК МЕНЮ =================
 
@@ -83,7 +123,7 @@ def get_main_keyboard(lang):
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     welcome_text = (
-        "🌱 **Ассалому алейкум! Интихоби забонро интихоб кунед.**\n"
+        "🌱 **Ассалому алейкум! Забонро интихоб кунед.**\n"
         "🌱 **Здравствуйте! Выберите язык для продолжения.**"
     )
     await message.answer(welcome_text, parse_mode="Markdown", reply_markup=get_lang_keyboard())
@@ -91,7 +131,7 @@ async def cmd_start(message: Message):
 @dp.message(F.text.in_({"⬅️ Назад к выбору языка", "⬅️ Бозгашт ба интихоби забон"}))
 async def btn_back_to_languages(message: Message):
     welcome_text = (
-        "🌱 **Интихоби забонро аз наву интихоб кунед.**\n"
+        "🌱 **Забонро аз нав интихоб кунед.**\n"
         "🌱 **Выберите язык заново для продолжения.**"
     )
     await message.answer(welcome_text, reply_markup=get_lang_keyboard())
@@ -102,7 +142,7 @@ async def set_lang_tj(message: Message):
     user_languages[user_id] = "tj"
     
     welcome_text = (
-        "🌱 **Шуморо ИИ-машваратчии «Агродониш» хайрамақдам мегӯяг!**\n\n"
+        "🌱 **Шуморо ИИ-машваратчии «Агродониш» хайрамақдам мегӯяд!**\n\n"
         "Ман ба деҳқонони Тоҷикистон барои ёфтани ҷавобҳои дақиқ оид ба агрономия ва табобати растаниҳо тавассути акс кӯмак мекунам.\n\n"
         "👇 **Барои паймоиш аз менюи зер истифода баред:**"
     )
@@ -139,7 +179,7 @@ async def btn_ask_question(message: Message):
         )
     await message.answer(instructions, parse_mode="Markdown")
 
-@dp.message(F.text.in_({"📸 Диагностика по photo", "📸 Диагностика по фото", "📸 Ташхис тавассути акс"}))
+@dp.message(F.text.in_({"📸 Диагностика по фото", "📸 Ташхис тавассути акс"}))
 async def btn_photo_help(message: Message):
     lang = user_languages.get(message.from_user.id, "ru")
     if lang == "tj":
@@ -210,7 +250,7 @@ async def seed_calc_start(message: Message):
     if lang == "ru":
         text = "🌱 *Калькулятор расхода семян*\n\nВыберите культуру, которую вы собираетесь сеять:"
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="🥔 Картошель", callback_data="seed_kartoshka")],
+            [InlineKeyboardButton(text="🥔 Картофель", callback_data="seed_kartoshka")],
             [InlineKeyboardButton(text="🌱 Хлопок", callback_data="seed_pahta")],
             [InlineKeyboardButton(text="🌾 Пшеница", callback_data="seed_gandum")]
         ])
@@ -229,7 +269,7 @@ async def process_seed_culture(callback: CallbackQuery, state: FSMContext):
     lang = user_languages.get(callback.from_user.id, "ru")
     await state.update_data(chosen_culture=culture)
     
-    text = "📐 Укажите площадь вашего участка:" if lang == "ru" else "📐 Тезнокии замини худро интихоб кунед:"
+    text = "📐 Укажите площадь вашего участка:" if lang == "ru" else "📐 Масоҳати замини худро интихоб кунед:"
     buttons = [
         [InlineKeyboardButton(text="1 сотих", callback_data="area_1"), InlineKeyboardButton(text="2 сотих", callback_data="area_2")],
         [InlineKeyboardButton(text="5 сотих", callback_data="area_5"), InlineKeyboardButton(text="10 сотих", callback_data="area_10")],
@@ -254,7 +294,7 @@ async def process_fixed_area(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "area_custom")
 async def process_custom_area_request(callback: CallbackQuery, state: FSMContext):
     lang = user_languages.get(callback.from_user.id, "ru")
-    text = "✍️ Введите площадь участка **в сотках (сотих)** числом:" if lang == "ru" else "✍️ Тезнокии заминро **бо сотих** ҳамчун адад ворид кунед:"
+    text = "✍️ Введите площадь участка **в сотках (сотих)** числом:" if lang == "ru" else "✍️ Масоҳати заминро **бо сотих** ҳамчун адад ворид кунед:"
     await callback.message.edit_text(text, parse_mode="Markdown")
     await state.set_state(SeedCalcState.waiting_for_custom_area)
     await callback.answer()
@@ -264,7 +304,8 @@ async def process_custom_area_text(message: Message, state: FSMContext):
     lang = user_languages.get(message.from_user.id, "ru")
     try:
         area_sotikh = float(message.text.strip().replace(",", "."))
-        if area_sotikh <= 0: raise ValueError()
+        if area_sotikh <= 0:
+            raise ValueError()
     except ValueError:
         error_text = "❌ Введите число больше 0:" if lang == "ru" else "❌ Адади дурустро ворид кунед:"
         await message.answer(error_text)
@@ -283,7 +324,7 @@ async def send_calc_result(message_obj, culture, area, weight, lang):
     if lang == "ru":
         text = f"📊 *Результат расчета*\n\n🌱 *Культура:* {c_ru}\n📐 *Площадь:* {area} сот.\n⚖️ *Расход семян:* **{weight:.1f} кг**\n\nℹ️ _Расчет произведен на основе официальных агротехнических стандартов Минсельхоза РТ._"
     else:
-        text = f"📊 *Натиҷаи ҳисобкунӣ*\n\n🌱 *Культура:* {c_tj}\n📐 *Масоҳат:* {area} сотих\n⚖️ *Вазни зарурӣ:* **{weight:.1f} кг**\n\nℹ️ _Ҳисобкунӣ дар асоси стандартҳои расмии агротехникии Вазорати кишковарзии ҶТ иҷро шудааст._"
+        text = f"📊 *Натиҷаи ҳисобкунӣ*\n\n🌱 *Культура:* {c_tj}\n📐 *Масоҳат:* {area} сотих\n⚖️ *Вазни зарурӣ:* **{weight:.1f} кг**\n\nℹ️ _Ҳисобкунӣ дар асоси стандартҳои расмии агротехникии Вазорати кишоварзии ҶТ иҷро шудааст._"
     await message_obj.answer(text, parse_mode="Markdown")
 
 # ================= ОБРАБОТКА ФОТОГРАФИЙ МИНСЕЛЬХОЗА =================
@@ -294,31 +335,41 @@ async def handle_photo(message: Message):
     
     waiting_msg = await message.answer(wait_text, parse_mode="Markdown")
     
-    photo = message.photo[-1]
-    file_info = await bot.get_file(photo.file_id)
-    photo_path = f"downloads/{photo.file_id}.jpg"
-    await bot.download_file(file_info.file_path, photo_path)
-    
-    img = Image.open(photo_path)
-    
-    target_lang = "таджикском языке (забони тоҷикӣ)" if lang == "tj" else "русском языке"
-    prompt = (
-        f"Ты — эксперт-агроном Минсельхоза Таджикистана. Посмотри на это photo растения. "
-        f"Определи, что это за культура, какая у неё болезнь или вредитель, "
-        f"и дай краткие пошаговые рекомендации по лечению строго на {target_lang}. "
-        f"Используй Markdown для красивого форматирования."
-    )
-    
     try:
-        response = client.models.generate_content(model="gemini-2.5-flash", contents=[img, prompt])
+        photo = message.photo[-1]
+        file_info = await bot.get_file(photo.file_id)
+        
+        # Загружаем фото напрямую в оперативную память (без временных файлов на диске)
+        photo_bytes_io = io.BytesIO()
+        await bot.download_file(file_info.file_path, destination=photo_bytes_io)
+        photo_bytes_io.seek(0)
+        img = Image.open(photo_bytes_io)
+        
+        target_lang = "таджикском языке (забони тоҷикӣ)" if lang == "tj" else "русском языке"
+        prompt = (
+            f"Ты — эксперт-агроном Минсельхоза Таджикистана. Посмотри на это фото растения. "
+            f"Определи, что это за культура, какая у неё болезнь или вредитель, "
+            f"и дай краткие пошаговые рекомендации по лечению строго на {target_lang}. "
+            f"Используй Markdown для красивого форматирования."
+        )
+        
+        # Асинхронный вызов модели Gemini (не блокирует бота)
+        response = await client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=[img, prompt]
+        )
+        
         await waiting_msg.delete()
-        await message.answer(response.text, parse_mode="Markdown")
+        await safe_send_message(message, response.text)
+        
     except Exception as e:
-        error_text = f"❌ Ошибка: {e}" if lang == "ru" else f"❌ Хатогӣ: {e}"
-        await waiting_msg.edit_text(error_text)
-    finally:
-        if os.path.exists(photo_path):
-            os.remove(photo_path)
+        print(f"Ошибка при обработке фото: {e}")
+        try:
+            await waiting_msg.delete()
+        except Exception:
+            pass
+        error_text = f"❌ Ошибка анализа фото: {e}" if lang == "ru" else f"❌ Хатогии таҳлили акс: {e}"
+        await message.answer(error_text)
 
 # ================= ОБРАБОТКА ВОПРОСОВ ЧЕРЕЗ QDRANT =================
 
@@ -327,7 +378,7 @@ async def handle_text(message: Message):
     # ЗАЩИТА: Игнорируем служебный текст экранных кнопок меню
     if message.text in [
         "📝 Савол додан", "📝 Задать вопрос", 
-        "📸 Ташхис тавассути акс", "📸 Диагностика по фото", "📸 Диагностика по photo",
+        "📸 Ташхис тавассути акс", "📸 Диагностика по фото",
         "ℹ️ О проекте 'Agrodonish'", "ℹ️ Дар бораи лоиҳаи 'Agrodonish'",
         "📞 Алоқа бо мутахассис", "📞 Связь с агрономом",
         "🌱 Меъёри тухмиҳо", "🌱 Расход семян",
@@ -341,41 +392,30 @@ async def handle_text(message: Message):
     waiting_msg = await message.answer(wait_text, parse_mode="Markdown")
     
     try:
-        format_query = f"query: {message.text}"
-        query_vector = list(encoder.embed([format_query]))[0].tolist()
+        # Тяжелый инференс векторизации в фоновом потоке asyncio
+        query_vector = await asyncio.to_thread(compute_query_vector, message.text)
         
-        search_result = []
-        
-        # Автоматическая проверка методов Qdrant
-        if hasattr(qdrant_client, "search"):
-            search_result = qdrant_client.search(
-                collection_name=COLLECTION_NAME,
-                query_vector=query_vector,
-                limit=4
-            )
-        elif hasattr(qdrant_client, "query_points"):
-            response = qdrant_client.query_points(
-                collection_name=COLLECTION_NAME,
-                query=query_vector,
-                limit=4
-            )
-            search_result = response.points
+        # Синхронный поиск в Qdrant выполняем в отдельном потоке
+        search_result = await asyncio.to_thread(perform_qdrant_search, query_vector)
         
         context_chunks = []
-        sources = []  # Список для уникальных источников
+        sources = []
         
         for hit in search_result:
             payload = hit.payload
             text = payload.get("text", "")
             context_chunks.append(text)
             
-            # Извлекаем автора, книгу и страницу из метаданных (если они прописаны в базе)
-            author = payload.get("author") or ("Министерство сельского хозяйства Республики Таджикистан" if lang == "ru" else "Вазорати кишоварзии Ҷумҳурии Тоҷикистон")
+            author = payload.get("author") or (
+                "Министерство сельского хозяйства Республики Таджикистан"
+                if lang == "ru"
+                else "Вазорати кишоварзии Ҷумҳурии Тоҷикистон"
+            )
             book = payload.get("book") or ("Официальное руководство" if lang == "ru" else "Дастури расмӣ")
             page = payload.get("page")
             
-            # Формируем красивую строку источника
-            source_str = f"• *«{book}»* — _ {author} _"
+            # Чистая строка источника без разрывающих спецсимволов
+            source_str = f"• *«{book}»* — _{author}_"
             if page:
                 source_str += f" (стр. {page})" if lang == "ru" else f" (сах. {page})"
                 
@@ -403,13 +443,16 @@ async def handle_text(message: Message):
         
         full_prompt = f"{system_instruction}\nБАЗА ЗНАНИЙ:\n{context}\n\nВОПРОС: {message.text}"
         
-        response = client.models.generate_content(model="gemini-2.5-flash", contents=full_prompt)
+        # Асинхронный вызов Gemini (не блокирует других пользователей бота)
+        response = await client.aio.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=full_prompt
+        )
         
-        # Если ИИ выдал стандартную заглушку (ответ не найден), то источники прикреплять не нужно
+        # Если ИИ выдал шаблон заглушки, источники не дублируем
         if template_reply in response.text:
             final_text = response.text
         else:
-            # Формируем красивый блок источников под основным ответом
             if sources:
                 sources_title = "\n\n📋 *Источники информации:*\n" if lang == "ru" else "\n\n📋 *Манбаъҳои маълумот:*\n"
                 sources_block = sources_title + "\n".join(sources)
@@ -418,13 +461,13 @@ async def handle_text(message: Message):
                 final_text = response.text
 
         await waiting_msg.delete()
-        await message.answer(final_text, parse_mode="Markdown")
+        await safe_send_message(message, final_text)
         
     except Exception as e:
         print(f"Ошибка в handle_text: {e}")
         try: 
             await waiting_msg.delete()
-        except: 
+        except Exception: 
             pass
         error_text = "❌ Ошибка базы данных знаний. Пожалуйста, попробуйте позже." if lang == "ru" else "❌ Хатогии пойгоҳи додаҳои дониш. Лутфан, дертар кӯшиш кунед."
         await message.answer(error_text)
