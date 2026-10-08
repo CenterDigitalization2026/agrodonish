@@ -370,8 +370,9 @@ async def handle_photo(message: Message):
             f"и дай краткие практические рекомендации по защите и лечению строго на {target_lang}."
         )
         
-        # Асинхронный вызов модели Gemini
-        response = await client.aio.models.generate_content(
+        # Безопасный вызов Gemini в отдельном потоке (не блокирует бота и не зависит от aiohttp)
+        response = await asyncio.to_thread(
+            client.models.generate_content,
             model="gemini-2.5-flash",
             contents=[img, prompt]
         )
@@ -460,8 +461,9 @@ async def handle_text(message: Message):
         
         full_prompt = f"{system_instruction}\nБАЗА ЗНАНИЙ:\n{context}\n\nВОПРОС: {message.text}"
         
-        # Асинхронный вызов Gemini
-        response = await client.aio.models.generate_content(
+        # Безопасный вызов Gemini в отдельном потоке (не блокирует бота и не зависит от aiohttp)
+        response = await asyncio.to_thread(
+            client.models.generate_content,
             model="gemini-2.5-flash",
             contents=full_prompt
         )
