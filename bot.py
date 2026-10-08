@@ -57,8 +57,8 @@ SEED_NORMS = {
 async def safe_send_message(message: Message, text: str):
     """
     Безопасная отправка ответа в Telegram:
-    1. Автоматическая разбивка сообщений при превышении лимита 4096 символов.
-    2. Fallback на обычный текст, если Telegram не может распарсить Markdown.
+    1. Автоматическая разбивка сообщений при превышении лимита 4000 символов.
+    2. Попытка отправки с разметкой, а при ошибке парсинга спецсимволов — чистым текстом.
     """
     max_len = 4000
     chunks = [text[i:i + max_len] for i in range(0, len(text), max_len)] if len(text) > max_len else [text]
@@ -66,6 +66,7 @@ async def safe_send_message(message: Message, text: str):
         try:
             await message.answer(chunk, parse_mode="Markdown")
         except Exception:
+            # Fallback на отправку чистого текста без парсинга
             await message.answer(chunk)
 
 def compute_query_vector(text: str):
@@ -73,20 +74,23 @@ def compute_query_vector(text: str):
     return list(encoder.embed([f"query: {text}"]))[0].tolist()
 
 def perform_qdrant_search(query_vector):
-    """Синхронный поиск по коллекции Qdrant."""
-    if hasattr(qdrant_client, "query_points"):
-        response = qdrant_client.query_points(
-            collection_name=COLLECTION_NAME,
-            query=query_vector,
-            limit=4
-        )
-        return response.points
-    elif hasattr(qdrant_client, "search"):
-        return qdrant_client.search(
-            collection_name=COLLECTION_NAME,
-            query_vector=query_vector,
-            limit=4
-        )
+    """Синхронный поиск по коллекции Qdrant с фильтрацией релевантности."""
+    try:
+        if hasattr(qdrant_client, "query_points"):
+            response = qdrant_client.query_points(
+                collection_name=COLLECTION_NAME,
+                query=query_vector,
+                limit=4
+            )
+            return response.points
+        elif hasattr(qdrant_client, "search"):
+            return qdrant_client.search(
+                collection_name=COLLECTION_NAME,
+                query_vector=query_vector,
+                limit=4
+            )
+    except Exception as e:
+        print(f"Ошибка поиска в Qdrant: {e}")
     return []
 
 # ================= СОЗДАНИЕ КНОПОК МЕНЮ =================
@@ -123,16 +127,16 @@ def get_main_keyboard(lang):
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
     welcome_text = (
-        "🌱 **Ассалому алейкум! Забонро интихоб кунед.**\n"
-        "🌱 **Здравствуйте! Выберите язык для продолжения.**"
+        "🌱 Ассалому алейкум! Забонро интихоб кунед.\n"
+        "🌱 Здравствуйте! Выберите язык для продолжения."
     )
-    await message.answer(welcome_text, parse_mode="Markdown", reply_markup=get_lang_keyboard())
+    await message.answer(welcome_text, reply_markup=get_lang_keyboard())
 
 @dp.message(F.text.in_({"⬅️ Назад к выбору языка", "⬅️ Бозгашт ба интихоби забон"}))
 async def btn_back_to_languages(message: Message):
     welcome_text = (
-        "🌱 **Забонро аз нав интихоб кунед.**\n"
-        "🌱 **Выберите язык заново для продолжения.**"
+        "🌱 Забонро аз нав интихоб кунед.\n"
+        "🌱 Выберите язык заново для продолжения."
     )
     await message.answer(welcome_text, reply_markup=get_lang_keyboard())
 
@@ -142,11 +146,11 @@ async def set_lang_tj(message: Message):
     user_languages[user_id] = "tj"
     
     welcome_text = (
-        "🌱 **Шуморо ИИ-машваратчии «Агродониш» хайрамақдам мегӯяд!**\n\n"
+        "🌱 Шуморо ИИ-машваратчии «Агродониш» хайрамақдам мегӯяд!\n\n"
         "Ман ба деҳқонони Тоҷикистон барои ёфтани ҷавобҳои дақиқ оид ба агрономия ва табобати растаниҳо тавассути акс кӯмак мекунам.\n\n"
-        "👇 **Барои паймоиш аз менюи зер истифода баред:**"
+        "👇 Барои паймоиш аз менюи зер истифода баред:"
     )
-    await message.answer(welcome_text, parse_mode="Markdown", reply_markup=get_main_keyboard("tj"))
+    await message.answer(welcome_text, reply_markup=get_main_keyboard("tj"))
 
 @dp.message(F.text == "🇷🇺 Русский")
 async def set_lang_ru(message: Message):
@@ -154,70 +158,70 @@ async def set_lang_ru(message: Message):
     user_languages[user_id] = "ru"
     
     welcome_text = (
-        "🌱 **Вас приветствует ИИ-консультант «Агродониш»!**\n\n"
+        "🌱 Вас приветствует ИИ-консультант «Агродониш»!\n\n"
         "Я помогаю фермерам Таджикистана находить точные ответы по агрономии и лечить растения по фото.\n\n"
-        "👇 **Используйте меню ниже для навигации:**"
+        "👇 Используйте меню ниже для навигации:"
     )
-    await message.answer(welcome_text, parse_mode="Markdown", reply_markup=get_main_keyboard("ru"))
+    await message.answer(welcome_text, reply_markup=get_main_keyboard("ru"))
 
 @dp.message(F.text.in_({"📝 Задать вопрос", "📝 Савол додан"}))
 async def btn_ask_question(message: Message):
     lang = user_languages.get(message.from_user.id, "ru")
     if lang == "tj":
         instructions = (
-            "💬 **Режими маълумотномаи матнӣ**\n\n"
+            "💬 Режими маълумотномаи матнӣ\n\n"
             "Танҳо саволи худро мустақиман ба ҳамин ҷо нависед (бо забони тоҷикӣ ё русӣ).\n"
-            "Масалан: _«Чӣ тавр бо малах дар чарогоҳҳо мубориза барем?»_.\n\n"
+            "Масалан: «Чӣ тавр бо малах дар чарогоҳҳо мубориза барем?».\n\n"
             "Ман ҷавобро аз дастурҳои расмии Вазорати кишоварзии ҶТ фавран пайдо мекунам."
         )
     else:
         instructions = (
-            "💬 **Режим текстового справочника**\n\n"
+            "💬 Режим текстового справочника\n\n"
             "Просто напишите свой вопрос прямо сюда в чат (на таджикском или русском языке).\n"
-            "Например: _«Как бороться с саранчой на пастбищах?»_.\n\n"
+            "Например: «Как бороться с саранчой на пастбищах?».\n\n"
             "Я мгновенно найду ответ в официальных регламентах Минсельхоза РТ."
         )
-    await message.answer(instructions, parse_mode="Markdown")
+    await message.answer(instructions)
 
 @dp.message(F.text.in_({"📸 Диагностика по фото", "📸 Ташхис тавассути акс"}))
 async def btn_photo_help(message: Message):
     lang = user_languages.get(message.from_user.id, "ru")
     if lang == "tj":
         instructions = (
-            "📷 **Режими ташхиси бемориҳои растаниҳо**\n\n"
-            "Барои таҳлил **акси** барг, поя, мева ё хӯшаи зарардидаро фиристед.\n\n"
-            "⚠️ *Маслиҳат:* Кӯшиш кунед, ки аксро дар равшании хуб ва аз наздик гиред, то ИИ тавонад патогенро дақиқ муайян кунад."
+            "📷 Режими ташхиси бемориҳои растаниҳо\n\n"
+            "Барои таҳлил акси барг, поя, мева ё хӯшаи зарардидаро фиристед.\n\n"
+            "⚠️ Маслиҳат: Кӯшиш кунед, ки аксро дар равшании хуб ва аз наздик гиред, то ИИ тавонад патогенро дақиқ муайян кунад."
         )
     else:
         instructions = (
-            "📷 **Режим распознавания болезней растений**\n\n"
-            "Пришлите мне **фотографию** пораженного листа, стебля, плода или колоса.\n\n"
-            "⚠️ *Совет:* Старайтесь делать фото при хорошем освещении и вблизи, чтобы ИИ мог четко определить патоген или вредителя."
+            "📷 Режим распознавания болезней растений\n\n"
+            "Пришлите мне фотографию пораженного листа, стебля, плода или колоса.\n\n"
+            "⚠️ Совет: Старайтесь делать фото при хорошем освещении и вблизи, чтобы ИИ мог четко определить патоген или вредителя."
         )
-    await message.answer(instructions, parse_mode="Markdown")
+    await message.answer(instructions)
 
 @dp.message(F.text.in_({"ℹ️ О проекте 'Agrodonish'", "ℹ️ Дар бораи лоиҳаи 'Agrodonish'"}))
 async def btn_about_project(message: Message):
     lang = user_languages.get(message.from_user.id, "ru")
     if lang == "tj":
         about_text = (
-            "🏛 **Системаи зеҳнии «Агродониш» (Agrodonish)**\n\n"
+            "🏛 Системаи зеҳнии «Агродониш» (Agrodonish)\n\n"
             "Барои дастгирии иттилоотии хоҷагиҳои деҳқонии Ҷумҳурии Тоҷикистон коркард шудааст.\n\n"
-            "🔹 **Ҳадаф:** Муҳайё кардани агрономи маҷозии инфиродӣ 24/7 барои ҳар як деҳқон.\n"
-            "🔹 **Технология:** Система дар заминаи моделҳои насли нави Gemini Flash ва технологияи RAG сохта шудааст, "
+            "🔹 Ҳадаф: Муҳайё кардани агрономи маҷозии инфиродӣ 24/7 барои ҳар як деҳқон.\n"
+            "🔹 Технология: Система дар заминаи моделҳои насли нави Gemini Flash ва технологияи RAG сохта шудааст, "
             "ки саҳеҳии ҷавобҳоро бе маълумоти бардурӯғ кафолат медиҳад.\n\n"
             "Ҳамаи тавсияҳо ба стандартҳои расмии Вазорати кишоварзии Ҷумҳурии Тоҷикистон мувофиқат мекунанд."
         )
     else:
         about_text = (
-            "🏛 **Интеллектуальная система «Агродониш» (Agrodonish)**\n\n"
+            "🏛 Интеллектуальная система «Агродониш» (Agrodonish)\n\n"
             "Разработано для информационной поддержки дехканских хозяйств Республики Таджикистан.\n\n"
-            "🔹 **Цель:** Предоставить каждому фермеру персонального виртуального агронома 24/7.\n"
-            "🔹 **Технологии:** Система построена на базе языковых моделей нового поколения Gemini Flash и технологии RAG, "
+            "🔹 Цель: Предоставить каждому фермеру персонального виртуального агронома 24/7.\n"
+            "🔹 Технологии: Система построена на базе языковых моделей нового поколения Gemini Flash и технологии RAG, "
             "что гарантирует точность ответов без ложных фактов.\n\n"
             "Все рекомендации соответствуют официальным стандартам Министерства сельского хозяйства РТ."
         )
-    await message.answer(about_text, parse_mode="Markdown")
+    await message.answer(about_text)
 
 # ================= БЛОК: СВЯЗЬ С АГРОНОМОМ =================
 @dp.message(F.text.in_({"📞 Алоқа бо мутахассис", "📞 Связь с агрономом"}))
@@ -225,43 +229,43 @@ async def connect_to_expert(message: Message):
     lang = user_languages.get(message.from_user.id, "ru")
     if lang == "ru":
         text = (
-            "📞 *Связь со специалистами Минсельхоза РТ*\n\n"
+            "📞 Связь со специалистами Минсельхоза РТ\n\n"
             "Если ИИ-консультант 'Агродониш' не смог найти точный ответ в базе данных, "
             "вы можете обратиться напрямую к специалистам центра рақамикунонӣ:\n\n"
-            "📱 *Телефон поддержки:* +992 502 05 05 11\n"
-            "📧 *Электронная почта:* info@agridigital.tj\n\n"
-            "📍 _Вы также можете направить официальное обращение в местное управление сельского хозяйства вашего района._"
+            "📱 Телефон поддержки: +992 502 05 05 11\n"
+            "📧 Электронная почта: info@agridigital.tj\n\n"
+            "📍 Вы также можете направить официальное обращение в местное управление сельского хозяйства вашего района."
         )
     else:
         text = (
-            "📞 *Алоқа бо мутахассисони Вазорати кишоварзии ҶТ*\n\n"
+            "📞 Алоқа бо мутахассисони Вазорати кишоварзии ҶТ\n\n"
             "Агар машваратчии сунъии 'Агродониш' натавонист ҷавоби дақиқро аз пойгоҳи маълумот пайдо кунад, "
             "шумо метавонед мустақиман ба мутахассисони маркази рақамикунонӣ муроҷиат кунед:\n\n"
-            "📱 *Телефони дастгирӣ:* +992 502 05 05 11\n"
-            "📧 *Почтаи электронӣ:* info@agridigital.tj\n\n"
-            "📍 _Шумо инчунин метавонед бо аризаи расмӣ ба раёсати кишоварзии маҳаллии ноҳияи худ муроҷиат намоед._"
+            "📱 Телефони дастгирӣ: +992 502 05 05 11\n"
+            "📧 Почтаи электронӣ: info@agridigital.tj\n\n"
+            "📍 Шумо инчунин метавонед бо аризаи расмӣ ба раёсати кишоварзии маҳаллии ноҳияи худ муроҷиат намоед."
         )
-    await message.answer(text, parse_mode="Markdown")
+    await message.answer(text)
 
 # ================= БЛОК: КАЛЬКУЛЯТОР РАСХОДА СЕМЯН =================
 @dp.message(F.text.in_({"🌱 Меъёри тухмиҳо", "🌱 Расход семян"}))
 async def seed_calc_start(message: Message):
     lang = user_languages.get(message.from_user.id, "ru")
     if lang == "ru":
-        text = "🌱 *Калькулятор расхода семян*\n\nВыберите культуру, которую вы собираетесь сеять:"
+        text = "🌱 Калькулятор расхода семян\n\nВыберите культуру, которую вы собираетесь сеять:"
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🥔 Картофель", callback_data="seed_kartoshka")],
             [InlineKeyboardButton(text="🌱 Хлопок", callback_data="seed_pahta")],
             [InlineKeyboardButton(text="🌾 Пшеница", callback_data="seed_gandum")]
         ])
     else:
-        text = "🌱 *Ҳисобкунаки меъёри тухмиҳо*\n\nКультураеро интихоб кунед, ки кишт кардан мехоҳед:"
+        text = "🌱 Ҳисобкунаки меъёри тухмиҳо\n\nКультураеро интихоб кунед, ки кишт кардан мехоҳед:"
         keyboard = InlineKeyboardMarkup(inline_keyboard=[
             [InlineKeyboardButton(text="🥔 Картошка", callback_data="seed_kartoshka")],
             [InlineKeyboardButton(text="🌱 Пахта", callback_data="seed_pahta")],
             [InlineKeyboardButton(text="🌾 Гандум", callback_data="seed_gandum")]
         ])
-    await message.answer(text, reply_markup=keyboard, parse_mode="Markdown")
+    await message.answer(text, reply_markup=keyboard)
 
 @dp.callback_query(F.data.startswith("seed_"))
 async def process_seed_culture(callback: CallbackQuery, state: FSMContext):
@@ -294,8 +298,8 @@ async def process_fixed_area(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data == "area_custom")
 async def process_custom_area_request(callback: CallbackQuery, state: FSMContext):
     lang = user_languages.get(callback.from_user.id, "ru")
-    text = "✍️ Введите площадь участка **в сотках (сотих)** числом:" if lang == "ru" else "✍️ Масоҳати заминро **бо сотих** ҳамчун адад ворид кунед:"
-    await callback.message.edit_text(text, parse_mode="Markdown")
+    text = "✍️ Введите площадь участка в сотках (сотих) числом:" if lang == "ru" else "✍️ Масоҳати заминро бо сотих ҳамчун адад ворид кунед:"
+    await callback.message.edit_text(text)
     await state.set_state(SeedCalcState.waiting_for_custom_area)
     await callback.answer()
 
@@ -322,24 +326,36 @@ async def send_calc_result(message_obj, culture, area, weight, lang):
     names = {"kartoshka": ("Картофель", "Картошка"), "pahta": ("Хлопок", "Пахта"), "gandum": ("Пшеница", "Гандум")}
     c_ru, c_tj = names.get(culture, (culture, culture))
     if lang == "ru":
-        text = f"📊 *Результат расчета*\n\n🌱 *Культура:* {c_ru}\n📐 *Площадь:* {area} сот.\n⚖️ *Расход семян:* **{weight:.1f} кг**\n\nℹ️ _Расчет произведен на основе официальных агротехнических стандартов Минсельхоза РТ._"
+        text = (
+            f"📊 Результат расчета\n\n"
+            f"🌱 Культура: {c_ru}\n"
+            f"📐 Площадь: {area} сот.\n"
+            f"⚖️ Расход семян: {weight:.1f} кг\n\n"
+            f"ℹ️ Расчет произведен на основе официальных агротехнических стандартов Минсельхоза РТ."
+        )
     else:
-        text = f"📊 *Натиҷаи ҳисобкунӣ*\n\n🌱 *Культура:* {c_tj}\n📐 *Масоҳат:* {area} сотих\n⚖️ *Вазни зарурӣ:* **{weight:.1f} кг**\n\nℹ️ _Ҳисобкунӣ дар асоси стандартҳои расмии агротехникии Вазорати кишоварзии ҶТ иҷро шудааст._"
-    await message_obj.answer(text, parse_mode="Markdown")
+        text = (
+            f"📊 Натиҷаи ҳисобкунӣ\n\n"
+            f"🌱 Культура: {c_tj}\n"
+            f"📐 Масоҳат: {area} сотих\n"
+            f"⚖️ Вазни зарурӣ: {weight:.1f} кг\n\n"
+            f"ℹ️ Ҳисобкунӣ дар асоси стандартҳои расмии агротехникии Вазорати кишоварзии ҶТ иҷро шудааст."
+        )
+    await message_obj.answer(text)
 
 # ================= ОБРАБОТКА ФОТОГРАФИЙ МИНСЕЛЬХОЗА =================
 @dp.message(F.photo)
 async def handle_photo(message: Message):
     lang = user_languages.get(message.from_user.id, "ru")
-    wait_text = "🔄 _Анализирую снимок, подождите..._" if lang == "ru" else "🔄 _Аксро таҳлил карда истодаам, лутфан мунтазир шавед..._"
+    wait_text = "🔄 Анализирую снимок, подождите..." if lang == "ru" else "🔄 Аксро таҳлил карда истодаам, лутфан мунтазир шавед..."
     
-    waiting_msg = await message.answer(wait_text, parse_mode="Markdown")
+    waiting_msg = await message.answer(wait_text)
     
     try:
         photo = message.photo[-1]
         file_info = await bot.get_file(photo.file_id)
         
-        # Загружаем фото напрямую в оперативную память (без временных файлов на диске)
+        # Загружаем фото напрямую в оперативную память
         photo_bytes_io = io.BytesIO()
         await bot.download_file(file_info.file_path, destination=photo_bytes_io)
         photo_bytes_io.seek(0)
@@ -347,13 +363,14 @@ async def handle_photo(message: Message):
         
         target_lang = "таджикском языке (забони тоҷикӣ)" if lang == "tj" else "русском языке"
         prompt = (
-            f"Ты — эксперт-агроном Минсельхоза Таджикистана. Посмотри на это фото растения. "
-            f"Определи, что это за культура, какая у неё болезнь или вредитель, "
-            f"и дай краткие пошаговые рекомендации по лечению строго на {target_lang}. "
-            f"Используй Markdown для красивого форматирования."
+            f"Ты — эксперт-агроном Минсельхоза Таджикистана. Внимательно изучи это фото.\n"
+            f"ВАЖНОЕ ПРАВИЛО: Если на фото НЕТ сельскохозяйственного растения, культуры, поля, плода или вредителя, "
+            f"вежливо сообщи, что объект на снимке не относится к агрономии, и попроси прислать четкое фото растения.\n"
+            f"Если это растение: определи культуру, признаки болезни или вредителя, "
+            f"и дай краткие практические рекомендации по защите и лечению строго на {target_lang}."
         )
         
-        # Асинхронный вызов модели Gemini (не блокирует бота)
+        # Асинхронный вызов модели Gemini
         response = await client.aio.models.generate_content(
             model="gemini-2.5-flash",
             contents=[img, prompt]
@@ -387,22 +404,22 @@ async def handle_text(message: Message):
         return
 
     lang = user_languages.get(message.from_user.id, "ru")
-    wait_text = "🔄 _Ищу информацию..._" if lang == "ru" else "🔄 _Маълумотро ҷустуҷӯ дорам..._"
+    wait_text = "🔄 Ищу информацию..." if lang == "ru" else "🔄 Маълумотро ҷустуҷӯ дорам..."
     
-    waiting_msg = await message.answer(wait_text, parse_mode="Markdown")
+    waiting_msg = await message.answer(wait_text)
     
     try:
-        # Тяжелый инференс векторизации в фоновом потоке asyncio
+        # Тяжелый инференс векторизации в фоновом потоке
         query_vector = await asyncio.to_thread(compute_query_vector, message.text)
         
-        # Синхронный поиск в Qdrant выполняем в отдельном потоке
+        # Поиск в Qdrant выполняем в отдельном потоке
         search_result = await asyncio.to_thread(perform_qdrant_search, query_vector)
         
         context_chunks = []
         sources = []
         
         for hit in search_result:
-            payload = hit.payload
+            payload = hit.payload or {}
             text = payload.get("text", "")
             context_chunks.append(text)
             
@@ -415,7 +432,7 @@ async def handle_text(message: Message):
             page = payload.get("page")
             
             # Чистая строка источника без разрывающих спецсимволов
-            source_str = f"• *«{book}»* — _{author}_"
+            source_str = f"• «{book}» — {author}"
             if page:
                 source_str += f" (стр. {page})" if lang == "ru" else f" (сах. {page})"
                 
@@ -443,7 +460,7 @@ async def handle_text(message: Message):
         
         full_prompt = f"{system_instruction}\nБАЗА ЗНАНИЙ:\n{context}\n\nВОПРОС: {message.text}"
         
-        # Асинхронный вызов Gemini (не блокирует других пользователей бота)
+        # Асинхронный вызов Gemini
         response = await client.aio.models.generate_content(
             model="gemini-2.5-flash",
             contents=full_prompt
@@ -454,7 +471,7 @@ async def handle_text(message: Message):
             final_text = response.text
         else:
             if sources:
-                sources_title = "\n\n📋 *Источники информации:*\n" if lang == "ru" else "\n\n📋 *Манбаъҳои маълумот:*\n"
+                sources_title = "\n\n📋 Источники информации:\n" if lang == "ru" else "\n\n📋 Манбаъҳои маълумот:\n"
                 sources_block = sources_title + "\n".join(sources)
                 final_text = f"{response.text}{sources_block}"
             else:
