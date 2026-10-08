@@ -1,0 +1,46 @@
+name: CI Pipeline (Агродониш)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  test_and_lint:
+    name: Проверка синтаксиса, линтинг и тесты
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 📥 Клонирование репозитория
+        uses: actions/checkout@v4
+
+      - name: 🐍 Настройка Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: 📦 Установка зависимостей
+        run: |
+          python -m pip install --upgrade pip
+          pip install flake8 pytest
+          pip install -r requirements.txt
+
+      - name: 🔒 Проверка безопасности (отсутствие .env в репозитории)
+        run: |
+          if git ls-files --error-unmatch .env 2>/dev/null; then
+            echo "❌ ОШИБКА: Файл .env закоммичен в репозиторий! Это угроза утечки токенов!"
+            exit 1
+          else
+            echo "✅ Файл .env надежно скрыт и отсутствует в Git."
+          fi
+
+      - name: 🔍 Проверка синтаксиса и критических ошибок Python (Flake8)
+        run: |
+          # Остановка сборки при критических синтаксических ошибках или неопределенных переменных
+          flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics --exclude=.git,__pycache__,downloads
+
+      - name: 🧪 Запуск автоматических тестов (PyTest)
+        run: |
+          pytest tests/ -v

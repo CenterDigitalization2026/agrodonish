@@ -2,3 +2,7 @@ aiogram==3.10.0
 google-genai
 pillow
 python-dotenv
+fastembed
+qdrant-client
+pypdf
+python-docx
